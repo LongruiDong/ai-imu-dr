@@ -76,7 +76,7 @@ class BaseDataset(Dataset):
     def get_data(self, i):
         pickle_dict = self[self.datasets.index(i) if type(i) != int else i]
         return pickle_dict['t'], pickle_dict['ang_gt'], pickle_dict['p_gt'], pickle_dict['v_gt'],\
-               pickle_dict['u']
+               pickle_dict['u'], pickle_dict['t0'] # 增加拿出初始时间
 
     def set_normalize_factors(self):
         path_normalize_factor = os.path.join(self.path_temp, self.file_normalize_factor)
@@ -163,6 +163,7 @@ class BaseDataset(Dataset):
         t_c_i0 = torch.zeros(3).double()
         return b_omega0, b_acc0, Rot_c_i0, t_c_i0  
 
+    # 从_filter.p中得到结果
     def get_estimates(self, dataset_name):
         #  Obtain  estimates
         dataset_name = self.datasets[dataset_name] if type(dataset_name) == int else \
@@ -179,7 +180,8 @@ class BaseDataset(Dataset):
         b_acc = mondict['b_acc']
         Rot_c_i = mondict['Rot_c_i']
         t_c_i = mondict['t_c_i']
+        Pbuffer = mondict['Pbuffer'] # 读取新保存的状态协方差
         measurements_covs = mondict['measurements_covs']
-        return Rot, v, p , b_omega, b_acc, Rot_c_i, t_c_i, measurements_covs
+        return Rot, v, p , b_omega, b_acc, Rot_c_i, t_c_i, measurements_covs, Pbuffer
 
 

@@ -17,21 +17,25 @@ from utils_numpy_filter import NUMPYIEKF as IEKF
 from utils import prepare_data
 from train_torch_filter import train_filter
 from utils_plot import results_filter
+from utils_plot import results_save
 
-
+# 总的调度 args:KITTIArgs
 def launch(args):
-    if args.read_data:
+    if args.read_data: #读取raw data 100hz
         args.dataset_class.read_data(args)
-    dataset = args.dataset_class(args)
+        # args.dataset_class.process_time(args) #装换为统一时间戳格式
+        # args.dataset_class.findtimematch(args) #寻找对应关系
+    dataset = args.dataset_class(args) #KITTIDataset类
 
-    if args.train_filter:
+    if args.train_filter: #训练
         train_filter(args, dataset)
 
-    if args.test_filter:
-        test_filter(args, dataset)
+    if args.test_filter: # 进行测试  没有03结果 因为03没有对应的raw data
+        test_filter(args, dataset) #保存结果到results
 
     if args.results_filter:
-        results_filter(args, dataset)
+        # results_filter(args, dataset)
+        results_save(args, dataset) # 保存处理数据
 
 
 class KITTIParameters(IEKF.Parameters):
@@ -64,6 +68,7 @@ class KITTIParameters(IEKF.Parameters):
             setattr(self, attr, getattr(KITTIParameters, attr))
 
 
+# KITTI raw data 的信息
 class KITTIDataset(BaseDataset):
     OxtsPacket = namedtuple('OxtsPacket',
                             'lat, lon, alt, ' + 'roll, pitch, yaw, ' + 'vn, ve, vf, vl, vu, '
@@ -78,17 +83,23 @@ class KITTIDataset(BaseDataset):
     # Bundle into an easy-to-access structure
     OxtsData = namedtuple('OxtsData', 'packet, T_w_imu')
     min_seq_dim = 25 * 100  # 60 s
+    # 这三个用来做什么
     datasets_fake = ['2011_09_26_drive_0093_extract', '2011_09_28_drive_0039_extract',
                      '2011_09_28_drive_0002_extract']
     """
-    '2011_09_30_drive_0028_extract' has trouble at N = [6000, 14000] -> test data
-    '2011_10_03_drive_0027_extract' has trouble at N = 29481
-    '2011_10_03_drive_0034_extract' has trouble at N = [33500, 34000]
+    '2011_09_30_drive_0028_extract' has trouble at N = [6000, 14000] -> test data  seq08
+    '2011_10_03_drive_0027_extract' has trouble at N = 29481                       seq00 to correct  index_extract 问题最多
+    '2011_10_03_drive_0034_extract' has trouble at N = [33500, 34000]              seq02 to correct
+    my:
+    '09_30_drive_0018_extract'     2-3                                             seq05
+    '09_30_drive_0020_extract'     0-1                                             seq06
+    '09_30_drive_0027_extract'     7663-7665  时间增长为负 但没影响到index match 频率降低时正好跳过了     seq07                            
+    '09_30_drive_0028_extract'     0-1                                             seq08
     """
 
     # training set to the raw data of the KITTI dataset.
     # The following dict lists the name and end frame of each sequence that
-    # has been used to extract the visual odometry / SLAM training set
+    # has been used to extract the visual odometry / SLAM training set      00-10
     odometry_benchmark = OrderedDict()
     odometry_benchmark["2011_10_03_drive_0027_extract"] = [0, 45692]
     odometry_benchmark["2011_10_03_drive_0042_extract"] = [0, 12180]
@@ -102,6 +113,7 @@ class KITTIDataset(BaseDataset):
     odometry_benchmark["2011_09_30_drive_0033_extract"] = [0, 16589]
     odometry_benchmark["2011_09_30_drive_0034_extract"] = [0, 12744]
 
+    # 和上面不同在哪里 index为何变化 貌似没用到  img 指图像?  但这也不是真实的对应起始关系
     odometry_benchmark_img = OrderedDict()
     odometry_benchmark_img["2011_10_03_drive_0027_extract"] = [0, 45400]
     odometry_benchmark_img["2011_10_03_drive_0042_extract"] = [0, 11000]
@@ -115,18 +127,47 @@ class KITTIDataset(BaseDataset):
     odometry_benchmark_img["2011_09_30_drive_0033_extract"] = [0, 15900]
     odometry_benchmark_img["2011_09_30_drive_0034_extract"] = [0, 12000]
 
+    # extract 和 odometry benchmark seq id 的映射
+    odometry_seqid = OrderedDict()
+    odometry_seqid["2011_10_03_drive_0027_extract"] = "00"
+    odometry_seqid["2011_10_03_drive_0042_extract"] = "01"
+    odometry_seqid["2011_10_03_drive_0034_extract"] = "02"
+    odometry_seqid["2011_09_26_drive_0067_extract"] = "03"
+    odometry_seqid["2011_09_30_drive_0016_extract"] = "04"
+    odometry_seqid["2011_09_30_drive_0018_extract"] = "05"
+    odometry_seqid["2011_09_30_drive_0020_extract"] = "06"
+    odometry_seqid["2011_09_30_drive_0027_extract"] = "07"
+    odometry_seqid["2011_09_30_drive_0028_extract"] = "08"
+    odometry_seqid["2011_09_30_drive_0033_extract"] = "09"
+    odometry_seqid["2011_09_30_drive_0034_extract"] = "10"
+
+    # from odometry benchmark中的 /media/kitti/dataset/devkit 
+    # 表示图像的时间在raw data sync（10hz） 中的起始对应
+    odometry_benchmark_sync = OrderedDict()
+    odometry_benchmark_sync["2011_10_03_drive_0027_sync"] = [0, 4540]
+    odometry_benchmark_sync["2011_10_03_drive_0042_sync"] = [0, 1100]
+    odometry_benchmark_sync["2011_10_03_drive_0034_sync"] = [0, 4660]
+    odometry_benchmark_sync["2011_09_26_drive_0067_sync"] = [0, 800]
+    odometry_benchmark_sync["2011_09_30_drive_0016_sync"] = [0, 270]
+    odometry_benchmark_sync["2011_09_30_drive_0018_sync"] = [0, 2760]
+    odometry_benchmark_sync["2011_09_30_drive_0020_sync"] = [0, 1100]
+    odometry_benchmark_sync["2011_09_30_drive_0027_sync"] = [0, 1100]
+    odometry_benchmark_sync["2011_09_30_drive_0028_sync"] = [1100, 5170]
+    odometry_benchmark_sync["2011_09_30_drive_0033_sync"] = [0, 1590]
+    odometry_benchmark_sync["2011_09_30_drive_0034_sync"] = [0, 1200] 
+
     def __init__(self, args):
         super(KITTIDataset, self).__init__(args)
-
-        self.datasets_validatation_filter['2011_09_30_drive_0028_extract'] = [11231, 53650]
-        self.datasets_train_filter["2011_10_03_drive_0042_extract"] = [0, None]
-        self.datasets_train_filter["2011_09_30_drive_0018_extract"] = [0, 15000]
-        self.datasets_train_filter["2011_09_30_drive_0020_extract"] = [0, None]
-        self.datasets_train_filter["2011_09_30_drive_0027_extract"] = [0, None]
-        self.datasets_train_filter["2011_09_30_drive_0033_extract"] = [0, None]
-        self.datasets_train_filter["2011_10_03_drive_0027_extract"] = [0, 18000]
-        self.datasets_train_filter["2011_10_03_drive_0034_extract"] = [0, 31000]
-        self.datasets_train_filter["2011_09_30_drive_0034_extract"] = [0, None]
+        # 04怎么没用？
+        self.datasets_validatation_filter['2011_09_30_drive_0028_extract'] = [11231, 53650] #8
+        self.datasets_train_filter["2011_10_03_drive_0042_extract"] = [0, None] #01
+        self.datasets_train_filter["2011_09_30_drive_0018_extract"] = [0, 15000] #05
+        self.datasets_train_filter["2011_09_30_drive_0020_extract"] = [0, None] #06
+        self.datasets_train_filter["2011_09_30_drive_0027_extract"] = [0, None] #07
+        self.datasets_train_filter["2011_09_30_drive_0033_extract"] = [0, None] #09
+        self.datasets_train_filter["2011_10_03_drive_0027_extract"] = [0, 18000] #00
+        self.datasets_train_filter["2011_10_03_drive_0034_extract"] = [0, 31000] #02
+        self.datasets_train_filter["2011_09_30_drive_0034_extract"] = [0, None] #10
 
         for dataset_fake in KITTIDataset.datasets_fake:
             if dataset_fake in self.datasets:
@@ -145,17 +186,17 @@ class KITTIDataset(BaseDataset):
 
         print("Start read_data")
         t_tot = 0  # sum of times for the all dataset
-        date_dirs = os.listdir(args.path_data_base)
+        date_dirs = os.listdir(args.path_data_base) # rawdata/  2011_10_03 2011_09_30
         for n_iter, date_dir in enumerate(date_dirs):
             # get access to each sequence
-            path1 = os.path.join(args.path_data_base, date_dir)
+            path1 = os.path.join(args.path_data_base, date_dir) #/rawdata/2011_09_30
             if not os.path.isdir(path1):
                 continue
-            date_dirs2 = os.listdir(path1)
+            date_dirs2 = os.listdir(path1) # path1/下所有目录及文件
 
             for date_dir2 in date_dirs2:
                 path2 = os.path.join(path1, date_dir2)
-                if not os.path.isdir(path2):
+                if not os.path.isdir(path2): #只要目录  '/media/kitti/dataset/rawdata/2011_10_03/2011_10_03_drive_0042_sync'
                     continue
                 # read data
                 oxts_files = sorted(glob.glob(os.path.join(path2, 'oxts', 'data', '*.txt')))
@@ -181,7 +222,7 @@ class KITTIDataset(BaseDataset):
                 roll_gt = np.zeros(len(oxts))
                 pitch_gt = np.zeros(len(oxts))
                 yaw_gt = np.zeros(len(oxts))
-                t = KITTIDataset.load_timestamps(path2)
+                t = KITTIDataset.load_timestamps(path2) # 读年月日时分秒
                 acc = np.zeros((len(oxts), 3))
                 acc_bis = np.zeros((len(oxts), 3))
                 gyro = np.zeros((len(oxts), 3))
@@ -201,7 +242,7 @@ class KITTIDataset(BaseDataset):
                     acc[k, 0] = oxts_k[0].af
                     acc[k, 1] = oxts_k[0].al
                     acc[k, 2] = oxts_k[0].au
-                    acc_bis[k, 0] = oxts_k[0].ax
+                    acc_bis[k, 0] = oxts_k[0].ax # imu frame 实际使用的 但为啥取名叫_bias??
                     acc_bis[k, 1] = oxts_k[0].ay
                     acc_bis[k, 2] = oxts_k[0].az
                     gyro[k, 0] = oxts_k[0].wf
@@ -213,18 +254,20 @@ class KITTIDataset(BaseDataset):
                     roll_oxts[k] = oxts_k[0].roll
                     pitch_oxts[k] = oxts_k[0].pitch
                     yaw_oxts[k] = oxts_k[0].yaw
-                    v_gt[k, 0] = oxts_k[0].ve
+                    v_gt[k, 0] = oxts_k[0].ve # 真值速度
                     v_gt[k, 1] = oxts_k[0].vn
                     v_gt[k, 2] = oxts_k[0].vu
+                    # 社么意思 vn 和 vf 不应该才是对应的吗
                     v_rob_gt[k, 0] = oxts_k[0].vf
                     v_rob_gt[k, 1] = oxts_k[0].vl
                     v_rob_gt[k, 2] = oxts_k[0].vu
+                    # oxts_k[1] T_w_imu gt
                     p_gt[k] = oxts_k[1][:3, 3]
                     Rot_gt_k = oxts_k[1][:3, :3]
                     roll_gt[k], pitch_gt[k], yaw_gt[k] = IEKF.to_rpy(Rot_gt_k)
 
                 t0 = t[0]
-                t = np.array(t) - t[0]
+                t = np.array(t) - t[0] # 这里t已经减掉起始了
                 # some data can have gps out
                 if np.max(t[:-1] - t[1:]) > 0.1:
                     cprint(date_dir2 + " has time problem", 'yellow')
@@ -237,7 +280,7 @@ class KITTIDataset(BaseDataset):
                                  alt_oxts[0], latlon_unit='deg', alt_unit='m', model='wgs84')
                 p_oxts[:, [0, 1]] = p_oxts[:, [1, 0]]  # see note
 
-                # take correct imu measurements
+                # take correct imu measurements 注意没用 f-l-u 参考系 而是imu系
                 u = np.concatenate((gyro_bis, acc_bis), -1)
                 # convert from numpy
                 t = torch.from_numpy(t)
@@ -255,12 +298,126 @@ class KITTIDataset(BaseDataset):
 
                 mondict = {
                     't': t, 'p_gt': p_gt, 'ang_gt': ang_gt, 'v_gt': v_gt,
-                    'u': u, 'name': date_dir2, 't0': t0
+                    'u': u, 'name': date_dir2, 't0': t0 #还好这里也保存了起始时间点 可以恢复出原时间
                     }
 
                 t_tot += t[-1] - t[0]
                 KITTIDataset.dump(mondict, args.path_data_save, date_dir2)
         print("\n Total dataset duration : {:.2f} s".format(t_tot))
+
+    @staticmethod
+    def process_time(args):
+        """
+        convert the timestamp from the KITTI dataset to unix 格式
+
+        :param args:
+        :return:
+        """
+
+        print("Start convert_time")
+        
+        date_dirs = os.listdir(args.path_data_base) # rawdata  2011_10_03 2011_09_30
+        for n_iter, date_dir in enumerate(date_dirs):
+            # get access to each sequence
+            path1 = os.path.join(args.path_data_base, date_dir) #/rawdata/2011_09_30
+            if not os.path.isdir(path1):
+                continue
+            date_dirs2 = os.listdir(path1) # path1/下所有目录及文件
+
+            for date_dir2 in date_dirs2:
+                path2 = os.path.join(path1, date_dir2)
+                if not os.path.isdir(path2): #只要目录  '/media/kitti/dataset/rawdata/2011_10_03/2011_10_03_drive_0042_sync'
+                    continue
+                # convert time
+                if path2[-4:] == "ract":
+                    continue
+                # timestamp_file = os.path.join(path2, 'oxts', 'timestamps.txt')
+                # print("file: " + timestamp_file)
+                # # Read and parse the timestamps
+                # ntimes = [] 
+                # with open(timestamp_file, 'r') as f:
+                #     for line in f.readlines():
+                #         # NB: datetime only supports microseconds, but KITTI timestamps
+                #         # give nanoseconds, so need to truncate last 4 characters to
+                #         # get rid of \n (counts as 1) and extra 3 digits
+                #         t = datetime.datetime.strptime(line[:-4], '%Y-%m-%d %H:%M:%S.%f')
+                #         nt =t.timestamp() # 转为unix时间
+                #         ntimes.append(nt)
+                # nts = np.array(ntimes)
+
+                ntspath = os.path.join(path2, 'oxts', 'ntimes.txt')
+                # print("save to: " + ntspath)
+                # np.savetxt(ntspath, nts, fmt= '%.6f') #原地保存时间戳
+                
+                #绘制图  看sync的时间是否正常
+                nts = np.loadtxt(ntspath)
+                N = nts.shape[0]
+                x = np.arange(0, N)
+                l = plt.plot(x,nts,marker='o', markerfacecolor='none', label='s')
+                plt.title(ntspath)
+                plt.xlabel('index')
+                plt.ylabel('timestamp')
+                plt.legend()
+                plt.show(block=True)
+
+    @staticmethod
+    def findtimematch(args):
+        """
+        从extract/oxts/ntimes.txt 中找到 sync/oxts/ntimes.txt 中时间相等的id
+        保存一个数组index 大小和sync/oxts/ntimes.txt一样， extract[index[i]] = sync[i] 
+        :param args:
+        :return:
+        """
+        print("Find index in extract/oxts/ntimes of sync...")
+        copypath = "results"
+        date_dirs = os.listdir(args.path_data_base) # rawdata/  2011_10_03 2011_09_30
+        for n_iter, date_dir in enumerate(date_dirs):
+            # get access to each sequence
+            path1 = os.path.join(args.path_data_base, date_dir) #/rawdata/2011_09_30
+            if not os.path.isdir(path1):
+                continue
+            date_dirs2 = os.listdir(path1) # path1/下所有目录及文件
+
+            for date_dir2 in date_dirs2:
+                path2 = os.path.join(path1, date_dir2)
+                if not os.path.isdir(path2): #只要目录  '/media/kitti/dataset/rawdata/2011_10_03/2011_10_03_drive_0042_sync'
+                    continue
+                if path2[-4:] == "ract":
+                    continue
+                print("path2[-4:] = " + path2[-4:])
+                driveid = path2[:-4] #/media/kitti/dataset/rawdata/2011_10_03/2011_10_03_drive_0042_
+                print("drive : " + driveid)
+                drivesync = path2 #driveid + "sync"
+                driveextract = driveid + "extract"
+                # 不同帧率时间戳路径
+                timesync_file = os.path.join(drivesync, 'oxts', 'ntimes.txt')
+                timeextract_file = os.path.join(driveextract, 'oxts', 'ntimes.txt')
+                
+                # Read and parse the timestamps
+                ntextract = np.loadtxt(timeextract_file)
+                ntsync = np.loadtxt(timesync_file)
+                
+                print("100hz " + timeextract_file)
+                print("10hz " + timesync_file)
+                x = ntextract.copy()#np.array([0.03,0.05,0.07,0.1,0.9,0.18,0.26,0.27])
+                y = ntsync.copy()#np.array([0.05,0.1,0.26])
+
+                index = np.argsort(x)
+                sorted_x = x[index]
+                sorted_index = np.searchsorted(sorted_x, y)
+
+                yindex = np.take(index, sorted_index, mode="clip")
+                mask = x[yindex] != y
+
+                indresult = np.ma.array(yindex, mask=mask)
+                indsave = os.path.join(drivesync, 'oxts', 'ind_extract.txt')
+                print("ind save to " + indsave)
+                np.savetxt(indsave, indresult, fmt='%d')
+                herepath = os.path.join(copypath, date_dir2[:-4] + 'extract', 'ind_extract.txt')
+                print("ind copy to " + herepath)
+                np.savetxt(herepath, indresult, fmt='%d')
+
+                
 
     @staticmethod
     def prune_unused_data(args):
@@ -325,7 +482,7 @@ class KITTIDataset(BaseDataset):
         """
         er = 6378137.  # earth radius (approx.) in meters
 
-        # Use a Mercator projection to get the translation vector
+        # Use a Mercator projection to get the translation vector 和kitti devkit 一致
         tx = scale * packet.lon * np.pi * er / 180.
         ty = scale * er * np.log(np.tan((90. + packet.lat) * np.pi / 360.))
         tz = packet.alt
@@ -349,7 +506,7 @@ class KITTIDataset(BaseDataset):
 
     @staticmethod
     def load_oxts_packets_and_poses(oxts_files):
-        """Generator to read OXTS ground truth data.
+        """Generator to read OXTS ground truth data.  得到100hz真值
            Poses are given in an East-North-Up coordinate system
            whose origin is the first GPS position.
         """
@@ -367,7 +524,7 @@ class KITTIDataset(BaseDataset):
                     # Last five entries are flags and counts
                     line[:-5] = [float(x) for x in line[:-5]]
                     line[-5:] = [int(float(x)) for x in line[-5:]]
-
+                    # 所有imu数据
                     packet = KITTIDataset.OxtsPacket(*line)
 
                     if scale is None:
@@ -414,7 +571,7 @@ class KITTIDataset(BaseDataset):
                 timestamps.append(t)
         return timestamps
 
-
+# 在除了03 其余10个序列上测试
 def test_filter(args, dataset):
     iekf = IEKF()
     torch_iekf = TORCHIEKF()
@@ -430,51 +587,54 @@ def test_filter(args, dataset):
 
     for i in range(0, len(dataset.datasets)):
         dataset_name = dataset.dataset_name(i)
-        if dataset_name not in dataset.odometry_benchmark.keys():
+        if dataset_name not in dataset.odometry_benchmark.keys(): # 限于benchmark
             continue
         print("Test filter on sequence: " + dataset_name)
         t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, i,
                                                        to_numpy=True)
         N = None
-        u_t = torch.from_numpy(u).double()
-        measurements_covs = torch_iekf.forward_nets(u_t)
+        u_t = torch.from_numpy(u).double() # 输入的imu测量
+        measurements_covs = torch_iekf.forward_nets(u_t) #这是伪测量的协方差N=cov(y) ! 直接从模型预测得到每帧的协方差
         measurements_covs = measurements_covs.detach().numpy()
         start_time = time.time()
-        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(t, u, measurements_covs,
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, Pbuffer = iekf.run(t, u, measurements_covs,
                                                                    v_gt, p_gt, N,
                                                                    ang_gt[0])
         diff_time = time.time() - start_time
         print("Execution time: {:.2f} s (sequence time: {:.2f} s)".format(diff_time,
                                                                           t[-1] - t[0]))
+        # 测试输出的x N  需要找出P
         mondict = {
             't': t, 'Rot': Rot, 'v': v, 'p': p, 'b_omega': b_omega, 'b_acc': b_acc,
-            'Rot_c_i': Rot_c_i, 't_c_i': t_c_i,
+            'Rot_c_i': Rot_c_i, 't_c_i': t_c_i, 'Pbuffer': Pbuffer, # 增加保存状态协方差
             'measurements_covs': measurements_covs,
-            }
+            } # TIMU_body
+        # 结果保存为.p文件
         dataset.dump(mondict, args.path_results, dataset_name + "_filter.p")
 
 
+# 一些主要的参数
 class KITTIArgs():
-        path_data_base = "/media/mines/46230797-4d43-4860-9b76-ce35e699ea47/KITTI/raw"
-        path_data_save = "../data"
-        path_results = "../results"
-        path_temp = "../temp"
+        path_data_base = "/media/kitti/dataset/rawdata" # kitti raw data 里面既有 100hz , 10hz
+        path_data_save = "data" # 如果再生成数据的话 data1
+        path_results = "results"
+        path_temp = "temp" # 模型文件
 
         epochs = 400
-        seq_dim = 6000
+        seq_dim = 6000 #？
 
         # training, cross-validation and test dataset
         cross_validation_sequences = ['2011_09_30_drive_0028_extract']
         test_sequences = ['2011_09_30_drive_0028_extract']
         continue_training = True
 
-        # choose what to do
-        read_data = 0
+        # choose what to do launch() 中调用
+        read_data = 0 #1表示从raw data 中重新生成pickle文件
         train_filter = 0
-        test_filter = 1
-        results_filter = 1
-        dataset_class = KITTIDataset
-        parameter_class = KITTIParameters
+        test_filter = 0 #1
+        results_filter = 1 # 是否读取预测结果
+        dataset_class = KITTIDataset #类
+        parameter_class = KITTIParameters #类
 
 
 if __name__ == '__main__':

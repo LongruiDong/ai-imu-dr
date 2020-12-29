@@ -91,7 +91,7 @@ class NUMPYIEKF:
         n_normalize_rot = 100
         """timestamp before normalizing orientation"""
         n_normalize_rot_c_i = 1000
-        """timestamp before normalizing car to IMU orientation"""
+        """timestamp before normalizing car to IMU orientation""" #再次佐证是 Timu_car
 
         def __init__(self, **kwargs):
             self.set(**kwargs)
@@ -116,12 +116,15 @@ class NUMPYIEKF:
                            self.cov_t_c_i, self.cov_t_c_i, self.cov_t_c_i])
 
     def run(self, t, u, measurements_covs, v_mes, p_mes, N, ang0):
-        dt = t[1:] - t[:-1]  # (s)
+        dt = t[1:] - t[:-1]  # (s) 会有负值吧 是的
         if N is None:
             N = u.shape[0]
+        #这里的P 好像没有保存每一时刻的值 只是当前最新的 需要改！  初始帧的R v用真值
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(dt, u, p_mes, v_mes,
                                        ang0, N)
-
+        #初始化 保存所有P的数组
+        Pbuffer = np.zeros((N, self.P_dim, self.P_dim))
+        Pbuffer[0] = P.copy() #初始的P
         for i in range(1, N):
             Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = \
                 self.propagate(Rot[i-1], v[i-1], p[i-1], b_omega[i-1], b_acc[i-1], Rot_c_i[i-1],
@@ -130,13 +133,15 @@ class NUMPYIEKF:
             Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P = \
                 self.update(Rot[i], v[i], p[i], b_omega[i], b_acc[i], Rot_c_i[i], t_c_i[i], P, u[i],
                             i, measurements_covs[i])
+            # 保存 P-i
+            Pbuffer[i] = P
             # correct numerical error every second
             if i % self.n_normalize_rot == 0:
                 Rot[i] = self.normalize_rot(Rot[i])
             # correct numerical error every 10 seconds
             if i % self.n_normalize_rot_c_i == 0:
                 Rot_c_i[i] = self.normalize_rot(Rot_c_i[i])
-        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
+        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, Pbuffer
 
     def init_run(self, dt, u, p_mes, v_mes, ang0, N):
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = self.init_saved_state(dt, N, ang0)
@@ -212,11 +217,11 @@ class NUMPYIEKF:
 
     def update(self, Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, u, i, measurement_cov):
         # orientation of body frame
-        Rot_body = Rot.dot(Rot_c_i)
+        Rot_body = Rot.dot(Rot_c_i) # Rw_imu Rimu_car  这里看出该变换 TIMU_body
         # velocity in imu frame
-        v_imu = Rot.T.dot(v)
-        # velocity in body frame
-        v_body = Rot_c_i.T.dot(v_imu)
+        v_imu = Rot.T.dot(v) # Rimu_w * vw
+        # velocity in body frame 
+        v_body = Rot_c_i.T.dot(v_imu) # Rcar_imu * vimu
         # velocity in body frame in the vehicle axis
         v_body += self.skew(t_c_i).dot(u[:3] - b_omega)
         Omega = self.skew(u[:3] - b_omega)

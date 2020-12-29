@@ -1,36 +1,61 @@
 import matplotlib
 import os
+import sys
+sys.path.append('/home/dlr/Project/ai-imu-dr/tools')
 from termcolor import cprint
 import matplotlib.pyplot as plt
 import numpy as np
 from itertools import chain
 from utils import *
 from utils_torch_filter import TORCHIEKF
+from difftime import *
+# from main_kitti import KITTIDataset
 
+
+# extract 和 odometry benchmark seq id 的映射
+odometry_seqid = OrderedDict()
+odometry_seqid["2011_10_03_drive_0027_extract"] = "00"
+odometry_seqid["2011_10_03_drive_0042_extract"] = "01"
+odometry_seqid["2011_10_03_drive_0034_extract"] = "02"
+odometry_seqid["2011_09_26_drive_0067_extract"] = "03"
+odometry_seqid["2011_09_30_drive_0016_extract"] = "04"
+odometry_seqid["2011_09_30_drive_0018_extract"] = "05"
+odometry_seqid["2011_09_30_drive_0020_extract"] = "06"
+odometry_seqid["2011_09_30_drive_0027_extract"] = "07"
+odometry_seqid["2011_09_30_drive_0028_extract"] = "08"
+odometry_seqid["2011_09_30_drive_0033_extract"] = "09"
+odometry_seqid["2011_09_30_drive_0034_extract"] = "10"
+
+# 从.p中读取结果 绘图 
 def results_filter(args, dataset):
 
     for i in range(0, len(dataset.datasets)):
         plt.close('all')
         dataset_name = dataset.dataset_name(i)
         file_name = os.path.join(dataset.path_results, dataset_name + "_filter.p")
-        if not os.path.exists(file_name):
+        if not os.path.exists(file_name): # data/中不是每个序列都有结果 目前只有10个序列的结果
             print('No result for ' + dataset_name)
             continue
 
-        print("\nResults for: " + dataset_name)
+        seqid = odometry_seqid[dataset_name]
+        print("\nResults for: " + dataset_name + ", " + seqid)
 
-        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, measurements_covs = dataset.get_estimates(
+        # 得到估计的结果 增加协方差
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, measurements_covs, Pbuffer = dataset.get_estimates(
             dataset_name)
 
-        # get data
-        t, ang_gt, p_gt, v_gt, u = dataset.get_data(dataset_name)
+        # get data 有时间戳 真值位姿 u是imu输入： 加速度 角速度
+        t, ang_gt, p_gt, v_gt, u, t0 = dataset.get_data(dataset_name)
         # get data for nets
         u_normalized = dataset.normalize(u).numpy()
         # shift for better viewing
         u_normalized[:, [0, 3]] += 5
         u_normalized[:, [2, 5]] -= 5
 
-        t = (t - t[0]).numpy()
+        # tsave = t.numpy().copy() #深拷贝时间戳
+        # tsave = (tsave + t0) # 恢复原始时间 .numpy()
+        # print("look t[0] = {:f}, raw t0 = {:f}".format(t[0], t0))
+        t = (t - t[0]).numpy() #其实t[0]已经是0了 上面输出已经做验证
         u = u.cpu().numpy()
         ang_gt = ang_gt.cpu().numpy()
         v_gt = v_gt.cpu().numpy()
@@ -54,10 +79,19 @@ def results_filter(args, dataset):
             ang_gt[j, 0] = yaw.numpy()
 
         Rot_align, t_align, _ = umeyama_alignment(p_gt[:, :3].T, p[:, :3].T)
-        p_align = (Rot_align.T.dot(p[:, :3].T)).T - Rot_align.T.dot(t_align)
+        p_align = (Rot_align.T.dot(p[:, :3].T)).T - Rot_align.T.dot(t_align) #只用于绘图 不评估
         v_norm = np.sqrt(np.sum(v_gt ** 2, 1))
         v_norm /= np.max(v_norm)
 
+        # plot and save plot
+        folder_path = os.path.join(args.path_results, dataset_name)
+        create_folder(folder_path)
+
+        # 保存 真值位姿Tw_imu 时间戳 伪测量y协方差N(measurements_covs)
+        # timepath = os.path.join(folder_path, "ntimes.txt")
+
+        # np.savetxt(timepath, tsave, fmt= '%.6f')
+        
         # Compute various errors
         error_p = np.abs(p_gt - p)
         # MATE
@@ -82,10 +116,6 @@ def results_filter(args, dataset):
         p_bis = (Rot_gt.matmul(torch.from_numpy(p_r).float().unsqueeze(-1)).squeeze()).numpy()
         error_p = p_gt - p_bis
 
-        # plot and save plot
-        folder_path = os.path.join(args.path_results, dataset_name)
-        create_folder(folder_path)
-
         # position, velocity and velocity in body frame
         fig1, axs1 = plt.subplots(3, 1, sharex=True, figsize=(20, 10))
         # orientation, bias gyro and bias accelerometer
@@ -105,7 +135,7 @@ def results_filter(args, dataset):
         axs1[0].plot(t, p)
         axs1[1].plot(t, v_gt)
         axs1[1].plot(t, v)
-        axs1[2].plot(t, v_r_gt)
+        axs1[2].plot(t, v_r_gt) # 实际是imu坐标系下
         axs1[2].plot(t, v_r)
 
         axs2[0].plot(t, ang_gt)
@@ -121,11 +151,11 @@ def results_filter(args, dataset):
         ax4.axis('equal')
 
         axs5[0].plot(t, np.log10(measurements_covs))
-        axs5[1].plot(t, u_normalized[:, :3])
-        axs5[2].plot(t, u_normalized[:, 3:])
+        axs5[1].plot(t, u_normalized[:, :3]) #归一化后的角速度
+        axs5[2].plot(t, u_normalized[:, 3:]) #归一化后的加速度
 
-        axs6[0].plot(t, u[:, :3])
-        axs6[1].plot(t, u[:, 3:6])
+        axs6[0].plot(t, u[:, :3]) #原始的角速度
+        axs6[1].plot(t, u[:, 3:6]) #原始的加速度
 
         axs7[0].plot(t, mate_xy)
         axs7[0].plot(t, mate_z)
@@ -200,7 +230,165 @@ def results_filter(args, dataset):
             fig_name = figs_name[l]
             fig.savefig(os.path.join(folder_path, fig_name + ".png"))
 
-        plt.show(block=True)
+        # plt.show(block=True)
+        
 
+# 保存位姿 以KITTI格式
+def saveposeKITTI(R,p, savefile, flag):
+    nframe = R.shape[0] # 总帧数
+    SE3 = np.ones((nframe, 4, 4))
+
+    for i in range(nframe):
+        SE3[i, 0:3, 0:3] = R[i]
+        SE3[i, 0:3, 3] = p[i]
+    
+    if flag: # 是轨迹时才 转化为以初始帧为参考
+        T0 = SE3[0].copy() #注意这里 否则会变化
+        T0inv = np.linalg.inv(T0)
+        for i in range(nframe):
+            Ti = SE3[i].copy()
+            SE3[i] = np.matmul(T0inv, Ti)
+    else:
+        print("Not trajectory, No T0inv")
+    
+    
+    #写入文件 
+    f = open(savefile , "w") 
+    for j in range(nframe):
+        slidt = [SE3[j,0,0], SE3[j,0,1], SE3[j,0,2], SE3[j,0,3],
+                    SE3[j,1,0], SE3[j,1,1], SE3[j,1,2], SE3[j,1,3],
+                    SE3[j,2,0], SE3[j,2,1], SE3[j,2,2], SE3[j,2,3]]
+        k = 0
+        for v in slidt:
+            #if type(v) == 'torch.float32':
+            #    v = v.numpy() 
+            f.write(str(v))
+            if(k<11): # 最后一个无空格，直接换行
+                f.write(' ')
+            k = k + 1
+        f.write('\n')
+    f.close()
+
+
+# 保存IEKF输出的协方差 注意已经是6*6
+def saveP66(P6, savefile):
+    nframe = P6.shape[0] # 总帧数
+    #写入文件 
+    f = open(savefile , "w") 
+    for j in range(nframe):
+        slidt = [P6[j,0,0], P6[j,0,1], P6[j,0,2], P6[j,0,3], P6[j,0,4], P6[j,0,5],
+                 P6[j,1,0], P6[j,1,1], P6[j,1,2], P6[j,1,3], P6[j,1,4], P6[j,1,5],
+                 P6[j,2,0], P6[j,2,1], P6[j,2,2], P6[j,2,3], P6[j,2,4], P6[j,2,5],
+                 P6[j,3,0], P6[j,3,1], P6[j,3,2], P6[j,3,3], P6[j,3,4], P6[j,3,5],
+                 P6[j,4,0], P6[j,4,1], P6[j,4,2], P6[j,4,3], P6[j,4,4], P6[j,4,5],
+                 P6[j,5,0], P6[j,5,1], P6[j,5,2], P6[j,5,3], P6[j,5,4], P6[j,5,5],
+                ]
+        k = 0
+        for v in slidt:
+            f.write(str(v))
+            if(k<35): # 最后一个无空格，直接换行
+                f.write(' ')
+            k = k + 1
+        f.write('\n')
+    f.close()
+
+# 从结果中保存需要的内容
+def results_save(args, dataset):
+
+    for i in range(0, len(dataset.datasets)):
+        plt.close('all')
+        dataset_name = dataset.dataset_name(i)
+        file_name = os.path.join(dataset.path_results, dataset_name + "_filter.p")
+        if not os.path.exists(file_name): # data/中不是每个序列都有结果 目前只有10个序列的结果
+            print('No result for ' + dataset_name)
+            continue
+        
+        seqid = odometry_seqid[dataset_name]
+        print("\n for: " + dataset_name + ", " + seqid)
+
+        # 得到估计的结果 增加协方差
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, measurements_covs, Pbuffer = dataset.get_estimates(
+            dataset_name)
+
+        # get data 有时间戳 真值位姿 u是imu输入： 加速度 角速度
+        t, ang_gt, p_gt, v_gt, u, t0 = dataset.get_data(dataset_name)
+        
+        ang_gt = ang_gt.cpu().numpy()
+        # v_gt = v_gt.cpu().numpy()
+        # p_gt = (p_gt - p_gt[0]).cpu().numpy()
+        p_gt = p_gt.cpu().numpy()
+        print("Total sequence time: {:.2f} s".format(t[-1]))
+
+        ang = np.zeros((Rot.shape[0], 3))
+        Rot_gt = torch.zeros((Rot.shape[0], 3, 3))
+        for j in range(Rot.shape[0]):
+            roll, pitch, yaw = TORCHIEKF.to_rpy(torch.from_numpy(Rot[j]))
+            ang[j, 0] = roll.numpy()
+            ang[j, 0] = pitch.numpy()
+            ang[j, 0] = yaw.numpy()
+        # unwrap
+            Rot_gt[j] = TORCHIEKF.from_rpy(torch.Tensor([ang_gt[j, 0]]),
+                                        torch.Tensor([ang_gt[j, 1]]),
+                                        torch.Tensor([ang_gt[j, 2]]))
+            roll, pitch, yaw = TORCHIEKF.to_rpy(Rot_gt[j])
+            ang_gt[j, 0] = roll.numpy()
+            ang_gt[j, 0] = pitch.numpy()
+            ang_gt[j, 0] = yaw.numpy()
+
+        Rot_gt = Rot_gt.cpu().numpy()
+        # Rot_align, t_align, _ = umeyama_alignment(p_gt[:, :3].T, p[:, :3].T)
+        # p_align = (Rot_align.T.dot(p[:, :3].T)).T - Rot_align.T.dot(t_align)
+        # v_norm = np.sqrt(np.sum(v_gt ** 2, 1))
+        # v_norm /= np.max(v_norm)
+
+        # plot and save plot
+        folder_path = os.path.join(args.path_results, dataset_name)
+        create_folder(folder_path)
+
+        # 保存 真值位姿Tw_imu, 估计的位姿 时间戳 伪测量y协方差N(measurements_covs) imu到车体的变换
+        # timepath = os.path.join(folder_path, "ntimes.txt")
+        gtposepath = os.path.join(folder_path, "imugt.txt")
+        estposepath = os.path.join(folder_path, "imuest.txt") # 用来评估
+        cov_ypath = os.path.join(folder_path, "covsy.txt")
+        carimu = os.path.join(folder_path, "car_imu.txt") # Timu_body
+        P6path = os.path.join(folder_path, "Psave.txt") #状态协方差 N 21,21->N 6 6
+
+        # np.savetxt(timepath, tsave, fmt= '%.6f')
+        
+        # difftime(timepath) # 查看100hz时间是否异常 
+
+        # indpath = os.path.join(folder_path, "ind_extract.txt")
+        
+        # #绘制图  查看 对应索引是否正常 0 2 5 6 8 都有异常
+        # indextract = np.loadtxt(indpath)
+        # N = indextract.shape[0]
+        # x = np.arange(0, N)
+        # l = plt.plot(x,indextract,marker='o', markerfacecolor='none', label='id')
+        # plt.title(indpath)
+        # plt.xlabel('frame in 10 hz')
+        # plt.ylabel('index in 100hz')
+        # plt.legend()
+        # plt.show(block=True)
+        print("save gt Twimu "+gtposepath)
+        saveposeKITTI(Rot_gt, p_gt, gtposepath, True)
+
+        saveposeKITTI(Rot, p, estposepath, True)
+
+        print("save T_c_i "+carimu)
+        saveposeKITTI(Rot_c_i, t_c_i, carimu, False)
+
+        np.savetxt(cov_ypath, measurements_covs)
+
+        N = Rot.shape[0]
+        Psave = np.zeros((N, 6, 6)) # 只保存与位姿相关的协方差矩阵的值 R 和 p
+        for i in range(N):
+            bigP = Pbuffer[i].copy() # 21,21
+            Psave[i, 0:3, 0:3] = bigP[0:3, 0:3]
+            Psave[i, 0:3, 3:6] = bigP[0:3, 6:9]
+            Psave[i, 3:6, 0:3] = bigP[6:9, 0:3]
+            Psave[i, 3:6, 3:6] = bigP[6:9, 6:9]
+        
+        print("save P6 "+P6path)
+        saveP66(Psave, P6path)
 
 
