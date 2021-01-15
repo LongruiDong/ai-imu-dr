@@ -50,7 +50,11 @@ def todometrylike(resroot):
         end = index_slice[1] + 1 # 前闭后开
         # https://www.zmonster.me/2016/03/09/numpy-slicing-and-indexing.html
         index_odometry = index_extract[start : end]
+        index_odofile = os.path.join(path1, 'index_odo.txt')
+        print("save index_odometry " + index_odofile)
+        np.savetxt(index_odofile, index_odometry, fmt='%d') # 保存odo到extract的映射
         
+        ''' #可Uncomment
         rawgtwcfile = os.path.join(path1, 'rawgtwc.txt')
         rawestwcfile = os.path.join(path1, 'rawestwc.txt')
 
@@ -98,6 +102,7 @@ def todometrylike(resroot):
         np.savetxt(odocarimupath, odocarimu)
         print("save odoP6 " + odoP6path)
         np.savetxt(odoP6path, odoP6)
+        '''
 
 
 
